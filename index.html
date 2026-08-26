@@ -141,7 +141,7 @@
 <div class="wrap">
 
   <div class="eyebrow">
-    <span>Protótipo · Legado Hold v3.2 · revisão reforçada</span>
+    <span>Protótipo · Legado Hold v3.3 · deploy limpo</span>
     <div class="zen-toggle modo-toggle" id="modoToggle"><span class="switch"></span><span>Modo avançado</span></div>
     <div class="zen-toggle" id="zenToggle"><span class="switch"></span><span>Zen Mode</span></div>
   </div>
@@ -169,11 +169,6 @@
       <div class="cfg-row">
         <label>Total investido hoje</label>
         <span class="h-value zen-sensitive" id="totalInvestido" style="font-family:var(--font-display); font-size:16px;">R$ 0</span>
-      </div>
-      <div class="cfg-row" style="align-items:flex-start; flex-direction:column; gap:6px;">
-        <label style="margin-bottom:2px;">URL do backend <span style="color:var(--text-faint); font-weight:400;">(deixe como o endereço atual quando frontend e backend estão no mesmo Render)</span></label>
-        <input type="text" id="backendUrl" placeholder="https://legado-hold-api.onrender.com" style="width:100%; text-align:left;">
-        <span style="font-size:10px;color:var(--text-faint);">Com backend configurado, Tesouro, B3, exterior, câmbio e cripto são consultados pelo servidor.</span>
       </div>
       <div class="cfg-row">
         <label>USD/BRL atual</label>
@@ -347,10 +342,7 @@ let state = {
   patrimonioHistorico: [],
   maxAtivos: 2,
   travaSetorial: 25,
-  brapiToken: '',
-  twelveDataToken: '',
-  backendUrl: '',
-  usdBrl: null,
+usdBrl: null,
   usdBrlAtualizadoEm: null,
   modoAvancado: false,
   benchmarks: { cdi:null, ipca12m:null, atualizadoEm:null }
@@ -360,7 +352,8 @@ try{
   const salvo=localStorage.getItem(LOCAL_KEY);
   if(salvo){
     const parsed=JSON.parse(salvo);
-    state={...state,...parsed};
+    const {brapiToken, twelveDataToken, backendUrl, ...safeParsed}=parsed;
+    state={...state,...safeParsed};
     state.classes=Array.isArray(parsed.classes)?parsed.classes:state.classes;
     state.ativos=Array.isArray(parsed.ativos)?parsed.ativos:[];
     state.aportes=Array.isArray(parsed.aportes)?parsed.aportes:[];
@@ -377,12 +370,7 @@ function uid(p){ return (p||'x') + Math.random().toString(36).slice(2,9); }
 function fmt(v){ return v.toLocaleString('pt-BR', { style:'currency', currency:'BRL' }); }
 function fmtNum(v){ return v.toLocaleString('pt-BR', { maximumFractionDigits:4 }); }
 function todayStr(){ return new Date().toISOString().slice(0,10); }
-function getBackendBase(){
-  const configurado=String(state.backendUrl||'').trim().replace(/\/+$/,'');
-  if(configurado) return configurado;
-  if(location.protocol==='http:' || location.protocol==='https:') return location.origin;
-  return 'http://localhost:5000';
-}
+function getBackendBase(){ return ''; }
 function markUnsaved(){
   hasUnsaved = true;
   try{ localStorage.setItem(LOCAL_KEY,JSON.stringify(state)); }catch(e){}
@@ -517,7 +505,7 @@ function getRentabilidadeGeral(){
 
 async function atualizarBenchmarks(){
   const statusEl=document.getElementById('benchmarkStatus');
-  const base=getBackendBase();
+  const base='';
   statusEl.textContent='Buscando CDI e IPCA pelo backend...';
   statusEl.style.color='var(--text-faint)';
   try{
@@ -983,9 +971,9 @@ function chaveCotacaoAtivo(ativo){
 /* ---------- COTAÇÕES VIA BACKEND ---------- */
 async function atualizarCotacoesBackend(){
   const statusEl = document.getElementById('cotacoesStatus');
-  const base = getBackendBase();
+  const base='';
   if(!base){
-    statusEl.textContent='Configure a URL do backend em Configurações.';
+    statusEl.textContent='O backend da aplicação não está disponível.';
     statusEl.style.color='var(--coral)';
     return;
   }
@@ -1312,7 +1300,6 @@ document.getElementById('snapshotBtn').addEventListener('click', () => {
 });
 
 /* ---------- CONFIG ---------- */
-document.getElementById('backendUrl').addEventListener('input', e => { state.backendUrl = e.target.value.trim(); markUnsaved(); });
 document.getElementById('maxAtivos').addEventListener('change', e => { state.maxAtivos = parseInt(e.target.value); markUnsaved(); });
 document.getElementById('travaSetorial').addEventListener('input', e => { state.travaSetorial = parseFloat(e.target.value)||0; markUnsaved(); });
 
@@ -1553,6 +1540,9 @@ function handleUpload(file){
       if(!parsed.aportes) parsed.aportes = [];
       if(!parsed.proventos) parsed.proventos = [];
       if(!parsed.patrimonioHistorico) parsed.patrimonioHistorico = [];
+      delete parsed.brapiToken;
+      delete parsed.twelveDataToken;
+      delete parsed.backendUrl;
       state = parsed;
       hasUnsaved = false;
       try{ localStorage.setItem(LOCAL_KEY,JSON.stringify(state)); }catch(e){}
@@ -1571,8 +1561,7 @@ document.getElementById('uploadInput').addEventListener('change', function(e){ i
 function renderAll(){
   document.getElementById('maxAtivos').value = state.maxAtivos;
   document.getElementById('travaSetorial').value = state.travaSetorial;
-  document.getElementById('backendUrl').value = state.backendUrl || (location.protocol==='file:' ? 'http://localhost:5000' : location.origin);
-  const usdEl = document.getElementById('usdBrlAtual');
+const usdEl = document.getElementById('usdBrlAtual');
   if(usdEl) usdEl.textContent = state.usdBrl ? 'R$ ' + Number(state.usdBrl).toLocaleString('pt-BR',{minimumFractionDigits:4,maximumFractionDigits:4}) : '—';
   document.getElementById('modoToggle').classList.toggle('active', !!state.modoAvancado);
   document.body.classList.toggle('modo-simples', !state.modoAvancado);

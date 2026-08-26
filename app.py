@@ -9,10 +9,8 @@ from pathlib import Path
 
 import requests
 from flask import Flask, jsonify, request, send_from_directory
-from flask_cors import CORS
 
 app = Flask(__name__, static_folder="static")
-CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 BRAPI_TOKEN = os.getenv("BRAPI_TOKEN", "").strip()
 TWELVEDATA_TOKEN = os.getenv("TWELVEDATA_TOKEN", "").strip()
@@ -373,6 +371,7 @@ def health():
         "tesouro_cache_date": _tesouro_cache.get("source_updated"),
         "brapi_configured": bool(BRAPI_TOKEN),
         "twelvedata_configured": bool(TWELVEDATA_TOKEN),
+        "frontend_mode": "same-origin",
     })
 
 @app.get("/api/tesouro")
