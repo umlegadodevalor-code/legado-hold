@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: legado-hold-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.5
+      - key: BRAPI_TOKEN
+        sync: false
+      - key: TWELVEDATA_TOKEN
+        sync: false
