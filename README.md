@@ -82,3 +82,14 @@ Exemplo:
   ]
 }
 ```
+
+
+## Revisão v3.2
+
+- Ao hospedar frontend e backend no mesmo Render, o site usa automaticamente `window.location.origin`; não aponte para localhost.
+- Tokens ficam somente nas variáveis de ambiente do Render.
+- Dados do usuário são salvos também no `localStorage` do navegador; o backup JSON continua recomendado.
+- Posições iniciais no exterior exigem câmbio médio inicial para calcular custo em BRL corretamente.
+- Trava setorial não bloqueia ativos cujo setor esteja em branco.
+- Tesouro usa quantidade fracionária de 0,01 na sugestão.
+- CDI/IPCA são consultados pelo backend, evitando CORS no navegador.

@@ -31,6 +31,41 @@ _tesouro_cache = {"loaded_at": 0.0, "rows": [], "source_updated": None}
 _tesouro_lock = Lock()
 TESOURO_CACHE_SECONDS = 12 * 60 * 60
 
+_quote_cache = {}
+QUOTE_CACHE_SECONDS = 5 * 60
+
+_rate = {}
+RATE_WINDOW_SECONDS = 10 * 60
+RATE_MAX_REQUESTS = 180
+
+def _client_ip():
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    return (forwarded.split(",")[0].strip() if forwarded else request.remote_addr) or "unknown"
+
+def _rate_allowed():
+    now = time.time()
+    ip = _client_ip()
+    bucket = _rate.setdefault(ip, [])
+    bucket[:] = [t for t in bucket if now - t < RATE_WINDOW_SECONDS]
+    if len(bucket) >= RATE_MAX_REQUESTS:
+        return False
+    bucket.append(now)
+    return True
+
+def _cache_get(key):
+    item = _quote_cache.get(key)
+    if not item:
+        return None
+    if time.time() - item["at"] > QUOTE_CACHE_SECONDS:
+        _quote_cache.pop(key, None)
+        return None
+    return item["value"]
+
+def _cache_set(key, value):
+    if value is not None:
+        _quote_cache[key] = {"at": time.time(), "value": value}
+    return value
+
 def _norm_text(value):
     s = unicodedata.normalize("NFD", str(value or ""))
     s = "".join(c for c in s if unicodedata.category(c) != "Mn")
@@ -86,8 +121,23 @@ def _download_tesouro_rows(force=False):
         ):
             return _tesouro_cache["rows"]
 
-        r = _session.get(TESOURO_CSV_URL, timeout=40)
-        r.raise_for_status()
+        try:
+            r = _session.get(TESOURO_CSV_URL, timeout=40)
+            r.raise_for_status()
+        except requests.RequestException:
+            # Fallback: descobre a URL atual via CKAN se o recurso mudar.
+            meta = _session.get(
+                "https://www.tesourotransparente.gov.br/ckan/api/3/action/package_show",
+                params={"id": "taxas-dos-titulos-ofertados-pelo-tesouro-direto"},
+                timeout=20,
+            )
+            meta.raise_for_status()
+            resources = (meta.json().get("result") or {}).get("resources") or []
+            csv_res = next((x for x in resources if str(x.get("format","")).upper()=="CSV"), None)
+            if not csv_res or not csv_res.get("url"):
+                raise RuntimeError("recurso CSV do Tesouro não encontrado no CKAN")
+            r = _session.get(csv_res["url"], timeout=40)
+            r.raise_for_status()
 
         content = r.content
         text = None
@@ -137,6 +187,10 @@ def _download_tesouro_rows(force=False):
         return rows
 
 def get_tesouro(family, maturity):
+    cache_key = ("tesouro", _norm_text(family), _parse_date(maturity))
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
     rows = _download_tesouro_rows()
     maturity = _parse_date(maturity)
     candidates = [
@@ -151,7 +205,7 @@ def get_tesouro(family, maturity):
     price = row["pu_base"] or row["pu_venda"] or row["pu_compra"]
     if not price:
         return None
-    return {
+    return _cache_set(cache_key, {
         "currency": "BRL",
         "price": price,
         "rate": row["taxa_venda"] if row["taxa_venda"] is not None else row["taxa_compra"],
@@ -166,9 +220,15 @@ def get_tesouro(family, maturity):
             else "PU Compra Manhã"
         ),
         "source": "Tesouro Transparente",
-    }
+    })
 
 def get_brapi(symbol):
+    symbol = str(symbol or "").strip().upper()
+    if not symbol:
+        return None
+    cached = _cache_get(("b3", symbol))
+    if cached:
+        return cached
     headers = {}
     if BRAPI_TOKEN:
         headers["Authorization"] = f"Bearer {BRAPI_TOKEN}"
@@ -183,13 +243,17 @@ def get_brapi(symbol):
     price = item.get("regularMarketPrice")
     if price is None:
         return None
-    return {
+    return _cache_set(("b3", symbol), {
         "currency": "BRL",
         "price": float(price),
         "source": "Brapi",
-    }
+    })
 
 def get_usdbrl():
+    cached = _cache_get(("fx", "USD-BRL"))
+    if cached:
+        return cached
+
     if TWELVEDATA_TOKEN:
         url = "https://api.twelvedata.com/price"
         r = _session.get(url, params={"symbol": "USD/BRL", "apikey": TWELVEDATA_TOKEN}, timeout=15)
@@ -197,16 +261,46 @@ def get_usdbrl():
             try:
                 p = float(r.json().get("price"))
                 if p > 0:
-                    return p
+                    return _cache_set(("fx", "USD-BRL"), p)
             except Exception:
                 pass
-    # public fallback from Brapi
-    q = get_brapi("USDBRL=X")
-    return q["price"] if q else None
+
+    if BRAPI_TOKEN:
+        try:
+            headers = {"Authorization": f"Bearer {BRAPI_TOKEN}"}
+            r = _session.get(
+                "https://brapi.dev/api/v2/currency",
+                params={"currency": "USD-BRL"},
+                headers=headers,
+                timeout=15,
+            )
+            if r.ok:
+                data = r.json()
+                candidates = (
+                    data.get("currency")
+                    or data.get("currencies")
+                    or data.get("results")
+                    or []
+                )
+                if isinstance(candidates, dict):
+                    candidates = [candidates]
+                if candidates:
+                    item = candidates[0]
+                    p = item.get("bidPrice") or item.get("bid") or item.get("price")
+                    p = float(p)
+                    if p > 0:
+                        return _cache_set(("fx", "USD-BRL"), p)
+        except Exception:
+            pass
+    return None
 
 def get_twelve(symbol):
-    if not TWELVEDATA_TOKEN:
+    symbol = str(symbol or "").strip().upper()
+    if not symbol or not TWELVEDATA_TOKEN:
         return None
+    cached = _cache_get(("eua", symbol))
+    if cached:
+        return cached
     r = _session.get(
         "https://api.twelvedata.com/price",
         params={"symbol": symbol, "apikey": TWELVEDATA_TOKEN},
@@ -220,7 +314,7 @@ def get_twelve(symbol):
         return None
     if price <= 0:
         return None
-    return {"currency": "USD", "price": price, "source": "Twelve Data"}
+    return _cache_set(("eua", symbol), {"currency": "USD", "price": price, "source": "Twelve Data"})
 
 CRYPTO_IDS = {
     "BTC": "bitcoin",
@@ -236,6 +330,9 @@ def normalize_crypto(symbol):
 
 def get_crypto(symbol):
     sym = normalize_crypto(symbol)
+    cached = _cache_get(("crypto", sym))
+    if cached:
+        return cached
 
     # Binance direct BRL
     try:
@@ -247,7 +344,7 @@ def get_crypto(symbol):
         if r.ok:
             p = float(r.json()["price"])
             if p > 0:
-                return {"currency": "BRL", "price": p, "source": "Binance"}
+                return _cache_set(("crypto", sym), {"currency": "BRL", "price": p, "source": "Binance"})
     except Exception:
         pass
 
@@ -263,7 +360,7 @@ def get_crypto(symbol):
             if r.ok:
                 p = float(r.json()[cg_id]["brl"])
                 if p > 0:
-                    return {"currency": "BRL", "price": p, "source": "CoinGecko"}
+                    return _cache_set(("crypto", sym), {"currency": "BRL", "price": p, "source": "CoinGecko"})
         except Exception:
             pass
     return None
@@ -294,8 +391,14 @@ def api_tesouro():
 
 @app.post("/api/quotes")
 def api_quotes():
+    if not _rate_allowed():
+        return jsonify({"ok": False, "error": "limite temporário de requisições"}), 429
     payload = request.get_json(silent=True) or {}
     assets = payload.get("assets") or []
+    if not isinstance(assets, list):
+        return jsonify({"ok": False, "error": "assets deve ser uma lista"}), 400
+    if len(assets) > 100:
+        return jsonify({"ok": False, "error": "máximo de 100 ativos por requisição"}), 400
     usdbrl = get_usdbrl()
     results = []
 
@@ -333,6 +436,38 @@ def api_quotes():
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "results": results,
     })
+
+
+@app.get("/api/benchmarks")
+def api_benchmarks():
+    if not _rate_allowed():
+        return jsonify({"ok": False, "error": "limite temporário de requisições"}), 429
+    try:
+        cdi_r = _session.get(
+            "https://api.bcb.gov.br/dados/serie/bcdata.sgs.12/dados/ultimos/1",
+            params={"formato": "json"},
+            timeout=15,
+        )
+        ipca_r = _session.get(
+            "https://api.bcb.gov.br/dados/serie/bcdata.sgs.13522/dados/ultimos/1",
+            params={"formato": "json"},
+            timeout=15,
+        )
+        cdi_r.raise_for_status()
+        ipca_r.raise_for_status()
+        cdi_data, ipca_data = cdi_r.json(), ipca_r.json()
+        cdi_daily = float(str(cdi_data[0]["valor"]).replace(",", "."))
+        cdi_aa = ((1 + cdi_daily/100) ** 252 - 1) * 100
+        ipca_12m = float(str(ipca_data[0]["valor"]).replace(",", "."))
+        return jsonify({
+            "ok": True,
+            "cdi_aa": cdi_aa,
+            "ipca_12m": ipca_12m,
+            "source": "Banco Central do Brasil",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"falha ao consultar BCB: {e}"}), 502
 
 @app.post("/api/tesouro/cache/refresh")
 def refresh_tesouro_cache():
